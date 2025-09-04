@@ -206,9 +206,20 @@ const App: React.FC = () => {
         return (
             <div className="text-center p-6">
                 <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Extraction in Progress</h2>
-                <svg className="animate-spin mx-auto h-12 w-12 text-blue-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <p className="text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-                    The AI is processing your documents. View the results as they populate in the table below.
+                <div className="w-full max-w-lg mx-auto space-y-3">
+                    <div className="flex justify-between mb-1">
+                        <span className="text-base font-medium text-blue-700 dark:text-blue-400">Processing Documents</span>
+                        <span className="text-sm font-medium text-blue-700 dark:text-blue-400">{progress}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                        <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{width: `${progress}%`}}></div>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 text-right">
+                        File {Math.min(Math.ceil(progress / 100 * files.length), files.length)} of {files.length}
+                    </p>
+                </div>
+                <p className="text-gray-500 dark:text-gray-500 mt-6 max-w-md mx-auto">
+                    View the results table below as it populates in real-time.
                 </p>
             </div>
         );
@@ -227,26 +238,7 @@ const App: React.FC = () => {
 
   const renderResultsPanel = () => {
     if (appState === 'extracting_data' || appState === 'data_display') {
-      const ProgressIndicator = () => (
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-            <div className="space-y-3 text-center">
-                <svg className="animate-spin mx-auto h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <p className="font-semibold text-lg text-gray-700 dark:text-gray-300">Extracting Data...</p>
-                <div className="w-full bg-gray-200 rounded-full dark:bg-gray-700">
-                    <div className="bg-blue-600 text-xs font-medium text-blue-100 text-center p-0.5 leading-none rounded-full" style={{ width: `${progress}%` }}>
-                        {progress > 0 ? `${progress}%` : ''}
-                    </div>
-                </div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                    Processing document {Math.min(Math.ceil(progress / 100 * files.length), files.length)} of {files.length}...
-                </p>
-            </div>
-        </div>
-      );
-
       return (
-        <>
-          {appState === 'extracting_data' && <ProgressIndicator />}
           <DataTable 
             data={extractedData} 
             isLoading={false} 
@@ -257,7 +249,6 @@ const App: React.FC = () => {
               : undefined
             }
           />
-        </>
       );
     }
     
