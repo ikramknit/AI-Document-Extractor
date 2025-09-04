@@ -2,12 +2,14 @@ import React, { useState, useCallback } from 'react';
 import FileUpload from './components/FileUpload';
 import DataTable from './components/DataTable';
 import HeaderConfiguration from './components/HeaderConfiguration';
-import { identifyHeadersFromFiles, extractInfoFromSingleFile } from './services/geminiService';
+import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from './services/geminiService';
 import { fileToGenerativePart } from './utils/fileUtils';
-import { SparklesIcon, AlertTriangleIcon, UploadIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon } from './components/Icons';
 import type { FileError } from './types';
 
 type AppState = 'file_upload' | 'identifying_headers' | 'header_selection' | 'prompting' | 'extracting_data' | 'data_display';
+type ApiKeyStatus = 'idle' | 'testing' | 'success' | 'error';
+
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('file_upload');
@@ -19,6 +21,21 @@ const App: React.FC = () => {
   const [suggestedHeaders, setSuggestedHeaders] = useState<string[]>([]);
   const [orderedHeaders, setOrderedHeaders] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus>('idle');
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+
+  const handleTestApiKey = async () => {
+      setApiKeyStatus('testing');
+      setApiKeyError(null);
+      const result = await testApiKey();
+      if (result.success) {
+          setApiKeyStatus('success');
+          setTimeout(() => setApiKeyStatus('idle'), 5000); // Revert after 5s
+      } else {
+          setApiKeyStatus('error');
+          setApiKeyError(result.error || 'An unknown error occurred.');
+      }
+  };
 
   const handleFilesChange = (newFiles: File[]) => {
     setFiles(prevFiles => [...prevFiles, ...newFiles]);
@@ -260,10 +277,54 @@ const App: React.FC = () => {
     return <DataTable data={null} isLoading={isLoading} placeholder={placeholderText} />;
   };
 
+  const ApiKeyStatusIndicator: React.FC = () => {
+      switch (apiKeyStatus) {
+          case 'testing':
+              return (
+                  <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-sm p-2">
+                      <div className="w-5 h-5 border-2 border-dashed rounded-full animate-spin border-blue-500"></div>
+                      <span>Testing Key...</span>
+                  </div>
+              );
+          case 'success':
+              return (
+                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-semibold p-2">
+                      <CheckCircleIcon className="w-6 h-6" />
+                      <span>API Key Verified</span>
+                  </div>
+              );
+          case 'error':
+              return (
+                  <div className="flex flex-col items-end p-2 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                      <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                          <XCircleIcon className="w-6 h-6" />
+                          <span className="font-semibold">Verification Failed</span>
+                      </div>
+                      <p className="text-xs text-red-500 dark:text-red-400 mt-1 max-w-xs text-right">{apiKeyError}</p>
+                  </div>
+              );
+          case 'idle':
+          default:
+              return (
+                  <button
+                      onClick={handleTestApiKey}
+                      className="flex items-center gap-2 py-2 px-3 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                      title="Test API Key Connection"
+                  >
+                      <KeyIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+                      <span className="text-sm font-semibold">Test API Key</span>
+                  </button>
+              );
+      }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans">
       <main className="container mx-auto p-4 md:p-8">
-        <header className="text-center mb-10">
+        <header className="text-center mb-10 relative">
+          <div className="absolute top-0 right-0 -mt-2">
+            <ApiKeyStatusIndicator />
+          </div>
           <h1 className="text-4xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-teal-400">
             AI Document Extractor
           </h1>

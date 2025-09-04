@@ -89,3 +89,35 @@ ${additionalPrompt ? `The user has also provided these additional instructions: 
     throw new Error("Failed to get a response from the AI model. Please check the console for more details.");
   }
 }
+
+export async function testApiKey(): Promise<{ success: boolean; error?: string }> {
+  try {
+    // A very simple, low-cost request to verify the key and model access.
+    await ai.models.generateContent({
+      model: model,
+      contents: [{ parts: [{ text: "hello" }] }],
+      config: {
+        // Use a very small token limit to make the call fast and cheap.
+        maxOutputTokens: 10,
+        thinkingConfig: { thinkingBudget: 0 }, // Disable thinking for speed
+      },
+    });
+    return { success: true };
+  } catch (error: any) {
+    console.error("API Key test failed:", error);
+    // Attempt to provide a more user-friendly error message.
+    let errorMessage = "An unknown error occurred during the API key test.";
+    if (error.message) {
+        if (error.message.includes('API_KEY_INVALID')) {
+            errorMessage = "The provided API Key is invalid. Please check your Vercel environment variables.";
+        } else if (error.message.includes('permission_denied')) {
+             errorMessage = "Permission denied. Please check your API key and ensure the Generative Language API is enabled in your Google Cloud project.";
+        } else if (error.message.toLowerCase().includes('billing')) {
+            errorMessage = "Billing issue. Please ensure billing is enabled for your project in the Google Cloud console.";
+        } else {
+            errorMessage = error.message;
+        }
+    }
+    return { success: false, error: errorMessage };
+  }
+}
