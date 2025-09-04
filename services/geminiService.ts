@@ -1,10 +1,12 @@
-import { GoogleGenAI } from "@google/genai";
-import type { Part } from "@google-genai/generative-ai";
+import { GoogleGenAI, Type } from "@google/genai";
+import type { Part } from "@google/genai";
 
+// Fix: Use process.env.API_KEY as per the guidelines.
 if (!process.env.API_KEY) {
-  throw new Error("API_KEY environment variable is not set");
+  throw new Error("API_KEY environment variable is not set. Please add it to your environment file or Vercel project settings.");
 }
 
+// Fix: Initialize with process.env.API_KEY directly.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 const model = "gemini-2.5-flash";
 
@@ -26,6 +28,13 @@ Do not include any other text or markdown formatting. The response must be only 
       contents: contents,
       config: {
         responseMimeType: "application/json",
+        // Fix: Added responseSchema for more reliable JSON output as per guidelines.
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.STRING,
+          },
+        },
       },
     });
 
