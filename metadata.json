@@ -1,0 +1,5 @@
+{
+  "name": "AI Document Extractor",
+  "description": "Upload multiple PDF or image documents to intelligently extract structured information and display it in a table format using the power of AI.",
+  "requestFramePermissions": []
+}
