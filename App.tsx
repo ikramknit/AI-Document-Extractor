@@ -4,7 +4,7 @@ import DataTable from './components/DataTable';
 import HeaderConfiguration from './components/HeaderConfiguration';
 import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from './services/geminiService';
 import { fileToGenerativePart } from './utils/fileUtils';
-import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon } from './components/Icons';
 import type { FileError } from './types';
 import type { Part } from '@google/genai';
 
@@ -86,6 +86,18 @@ const App: React.FC = () => {
         setAppState('file_upload');
     }
   }, [files, sameHeadersForAllFiles]);
+
+  const handleConfigureManually = () => {
+    if (files.length === 0) {
+        setError('Please upload at least one file first.');
+        return;
+    }
+    setError(null);
+    // We add the default headers here so the user can still choose them
+    const defaultHeaders = ['S.No', 'Document Name'];
+    setSuggestedHeaders(defaultHeaders); 
+    setAppState('header_selection');
+  };
 
   const handleHeaderConfirm = (headers: string[]) => {
     setOrderedHeaders(headers);
@@ -241,13 +253,24 @@ const App: React.FC = () => {
                   </div>
               </div>
             ) : (
-              <button
-                onClick={handleIdentifyHeaders}
-                disabled={files.length === 0}
-                className="mt-6 w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
-              >
-                Identify Headers
-              </button>
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <button
+                    onClick={handleIdentifyHeaders}
+                    disabled={files.length === 0}
+                    className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
+                  >
+                    <SparklesIcon className="w-6 h-6" />
+                    AI Identify Headers
+                  </button>
+                  <button
+                    onClick={handleConfigureManually}
+                    disabled={files.length === 0}
+                    className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
+                  >
+                    <PencilSquareIcon className="w-6 h-6" />
+                    Configure Manually
+                  </button>
+              </div>
             )}
           </>
         );
