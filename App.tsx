@@ -6,6 +6,7 @@ import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from 
 import { fileToGenerativePart } from './utils/fileUtils';
 import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon } from './components/Icons';
 import type { FileError } from './types';
+import type { Part } from '@google/genai';
 
 type AppState = 'file_upload' | 'identifying_headers' | 'header_selection' | 'prompting' | 'extracting_data' | 'data_display';
 type ApiKeyStatus = 'idle' | 'testing' | 'success' | 'error';
@@ -23,6 +24,8 @@ const App: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus>('idle');
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [currentlyProcessingFile, setCurrentlyProcessingFile] = useState<string | null>(null);
+  const [sameHeadersForAllFiles, setSameHeadersForAllFiles] = useState(true);
 
   const handleTestApiKey = async () => {
       setApiKeyStatus('testing');
@@ -46,24 +49,43 @@ const App: React.FC = () => {
     setFiles(files.filter((_, i) => i !== index));
   };
 
-  const handleIdentifyHeaders = async () => {
+  const handleIdentifyHeaders = useCallback(async () => {
     if (files.length === 0) {
-      setError('Please upload at least one file first.');
-      return;
+        setError('Please upload at least one file first.');
+        return;
     }
     setError(null);
     setAppState('identifying_headers');
+    setProgress(0);
     try {
-      const fileParts = await Promise.all(files.map(fileToGenerativePart));
-      const headers = await identifyHeadersFromFiles(fileParts);
-      const enhancedHeaders = ['S.No', 'Document Name', ...headers];
-      setSuggestedHeaders([...new Set(enhancedHeaders)]);
-      setAppState('header_selection');
+        const fileParts: Part[] = [];
+        const filesToProcess = sameHeadersForAllFiles && files.length > 1 ? [files[0]] : files;
+        
+        for (let i = 0; i < filesToProcess.length; i++) {
+            const file = filesToProcess[i];
+            const filePart = await fileToGenerativePart(file);
+            fileParts.push(filePart);
+            // Update progress for file processing (0% to 50%)
+            setProgress(Math.round(((i + 1) / filesToProcess.length) * 50));
+        }
+
+        // Indicate AI processing stage
+        setProgress(75);
+        const headers = await identifyHeadersFromFiles(fileParts);
+        
+        setProgress(100); // Complete
+        
+        // Short delay for better UX, allowing user to see 100%
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const enhancedHeaders = ['S.No', 'Document Name', ...headers];
+        setSuggestedHeaders([...new Set(enhancedHeaders)]);
+        setAppState('header_selection');
     } catch (err: any) {
-      setError(err.message || 'Failed to identify headers.');
-      setAppState('file_upload');
+        setError(err.message || 'Failed to identify headers.');
+        setAppState('file_upload');
     }
-  };
+  }, [files, sameHeadersForAllFiles]);
 
   const handleHeaderConfirm = (headers: string[]) => {
     setOrderedHeaders(headers);
@@ -84,6 +106,7 @@ const App: React.FC = () => {
     setError(null);
     setExtractedData([]);
     setProgress(0);
+    setCurrentlyProcessingFile(null);
 
     const allResults: Record<string, any>[] = [];
     const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
@@ -103,6 +126,7 @@ const App: React.FC = () => {
 
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        setCurrentlyProcessingFile(file.name);
         try {
             const filePart = await fileToGenerativePart(file);
             const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
@@ -120,18 +144,24 @@ const App: React.FC = () => {
         } catch (err: any) {
             console.error("Extraction failed for file:", file.name, err);
             setError(`Error processing ${file.name}: ${err.message}. Extraction stopped.`);
-            setAppState('prompting');
-            // Revert data to what was successfully processed
+            
+            // Save the results that were successfully processed before the error.
             const finalData = allResults.map((row, index) => {
                 const newRow: Record<string, any> = {};
-                if (orderedHeaders.includes('S.No')) newRow['S.No'] = index + 1;
-                orderedHeaders.filter(h => h !== 'S.No').forEach(header => {
-                    newRow[header] = row[header];
+                orderedHeaders.forEach(header => {
+                    if (header === 'S.No') {
+                        newRow['S.No'] = index + 1;
+                    } else {
+                        newRow[header] = row[header];
+                    }
                 });
                 return newRow;
             });
             setExtractedData(finalData);
-            return;
+            
+            setCurrentlyProcessingFile(null);
+            setAppState('data_display'); // Move to display state to allow saving partial results
+            return; // Exit the loop
         }
         setProgress(Math.round(((i + 1) / files.length) * 100));
     }
@@ -148,6 +178,7 @@ const App: React.FC = () => {
         return newRow;
     });
 
+    setCurrentlyProcessingFile(null);
     setExtractedData(finalData);
     setAppState('data_display');
   }, [orderedHeaders, prompt, files]);
@@ -162,6 +193,7 @@ const App: React.FC = () => {
     setSuggestedHeaders([]);
     setOrderedHeaders([]);
     setProgress(0);
+    setCurrentlyProcessingFile(null);
   };
 
   const renderContentPanel = () => {
@@ -174,14 +206,38 @@ const App: React.FC = () => {
           <>
             <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">1. Upload Documents</h2>
             <FileUpload onFilesChange={handleFilesChange} files={files} removeFile={removeFile} setFileErrors={setFileErrors} />
+            
+            {files.length > 1 && !isIdentifying && (
+              <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg text-center">
+                <label className="flex items-center justify-center space-x-3 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        checked={sameHeadersForAllFiles}
+                        onChange={(e) => setSameHeadersForAllFiles(e.target.checked)}
+                        className="h-5 w-5 rounded border-gray-300 dark:border-gray-500 bg-gray-200 dark:bg-gray-600 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="font-medium text-gray-800 dark:text-gray-200">All documents have the same headers</span>
+                </label>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                    If checked, only the first document will be analyzed to find headers, making the process faster.
+                </p>
+              </div>
+            )}
+
             {isIdentifying ? (
               <div className="mt-6 text-center">
                   <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Identifying Headers...</h3>
                   <p className="text-sm text-gray-600 dark:text-gray-400 my-2">
-                      AI is analyzing your documents. Please wait.
+                      {progress <= 50 ? 'Processing your documents...' : 'Asking the AI to identify potential headers...'}
                   </p>
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 overflow-hidden">
-                      <div className="bg-blue-600 h-2.5 rounded-full animate-pulse" style={{ width: '100%' }}></div>
+                  <div className="w-full max-w-lg mx-auto space-y-2">
+                      <div className="flex justify-between mb-1">
+                          <span className="text-base font-medium text-blue-700 dark:text-blue-400">Analysis Progress</span>
+                          <span className="text-sm font-medium text-blue-700 dark:text-blue-400">{progress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                          <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{width: `${progress}%`}}></div>
+                      </div>
                   </div>
               </div>
             ) : (
@@ -231,9 +287,14 @@ const App: React.FC = () => {
                     <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
                         <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{width: `${progress}%`}}></div>
                     </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 text-right">
-                        File {Math.min(Math.ceil(progress / 100 * files.length), files.length)} of {files.length}
-                    </p>
+                    <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                        <span className="truncate pr-4" title={currentlyProcessingFile ?? 'Starting...'}>
+                            {currentlyProcessingFile ? `Processing: ${currentlyProcessingFile}` : 'Initializing...'}
+                        </span>
+                        <span className="flex-shrink-0">
+                             File {Math.min(Math.ceil(progress / 100 * files.length), files.length)} of {files.length}
+                        </span>
+                    </div>
                 </div>
                 <p className="text-gray-500 dark:text-gray-500 mt-6 max-w-md mx-auto">
                     View the results table below as it populates in real-time.
@@ -241,6 +302,17 @@ const App: React.FC = () => {
             </div>
         );
       case 'data_display':
+         if (error) {
+             return (
+                 <div className="text-center p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+                   <h2 className="text-2xl font-bold mb-4 text-yellow-800 dark:text-yellow-200">Extraction Halted</h2>
+                   <p className="text-gray-600 dark:text-gray-300 mb-6">An error occurred during extraction. You can export the successfully processed data below or start over.</p>
+                   <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
+                     <UploadIcon className="w-6 h-6" /> Start New Extraction
+                   </button>
+                 </div>
+             );
+         }
          return (
             <div className="text-center p-6 bg-green-50 dark:bg-green-900/20 rounded-lg">
               <h2 className="text-2xl font-bold mb-4 text-green-800 dark:text-green-200">Extraction Complete!</h2>
@@ -335,7 +407,7 @@ const App: React.FC = () => {
 
         <div className="grid grid-cols-1 gap-8">
           <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700">
-            {error && appState !== 'extracting_data' && (
+            {error && !['extracting_data', 'data_display'].includes(appState) && (
               <div className="mb-4 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg relative" role="alert">
                 <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Error: </strong>
                 <span className="block sm:inline">{error}</span>
@@ -345,7 +417,7 @@ const App: React.FC = () => {
           </div>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 min-h-[500px] max-h-[80vh] flex flex-col">
             <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Results</h2>
-             {error && appState === 'extracting_data' && (
+             {error && ['extracting_data', 'data_display'].includes(appState) && (
               <div className="mb-4 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg relative" role="alert">
                 <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Error: </strong>
                 <span className="block sm:inline">{error}</span>

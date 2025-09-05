@@ -29,8 +29,8 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
                         <strong>Error:</strong> {this.state.error?.message}
                     </p>
                 </div>
-                 {/* Fix: Updated environment variable name to API_KEY to match guidelines. */}
-                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-6">Please check your Vercel environment variables and ensure <strong>API_KEY</strong> is set correctly, then redeploy the application.</p>
+                 {/* Fix: Updated environment variable name to API_KEY to match coding guidelines. */}
+                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-6">Please ensure the environment variable <strong>API_KEY</strong> is set correctly in your environment.</p>
             </div>
         </div>
       );
