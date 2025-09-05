@@ -1,16 +1,16 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import FileUpload from './components/FileUpload';
 import DataTable from './components/DataTable';
 import HeaderConfiguration from './components/HeaderConfiguration';
 import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from './services/geminiService';
 import { fileToGenerativePart } from './utils/fileUtils';
-import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon, PlayIcon, PauseIcon, StopIcon, ArrowPathIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, RefreshCwIcon } from './components/Icons';
 import type { FileError } from './types';
 import type { Part } from '@google/genai';
 
 type AppState = 'file_upload' | 'identifying_headers' | 'header_selection' | 'prompting' | 'extracting_data' | 'data_display';
 type ApiKeyStatus = 'idle' | 'testing' | 'success' | 'error';
-type ExtractionStatus = 'running' | 'paused' | 'stopped' | 'error';
+
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('file_upload');
@@ -24,63 +24,32 @@ const App: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus>('idle');
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
-  const [currentlyProcessingFile, setCurrentlyProcessingFile] = useState<string | null>(null);
   const [sameHeadersForAllFiles, setSameHeadersForAllFiles] = useState(true);
-  const [extractionStatus, setExtractionStatus] = useState<ExtractionStatus>('running');
-  const extractionIndexRef = useRef(0);
 
-  const processNextFile = useCallback(async () => {
-    // This function is the core of the pausable extraction process.
-    // It processes one file at a time and then schedules the next one.
-    const i = extractionIndexRef.current;
+  // New state for parallel processing and ETA
+  const [processedFileCount, setProcessedFileCount] = useState(0);
+  const [extractionStartTime, setExtractionStartTime] = useState<number | null>(null);
+  const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<string | null>(null);
+  const smoothedEtaRef = useRef<number | null>(null);
 
-    if (i >= files.length) {
-      setAppState('data_display');
-      setExtractionStatus('stopped');
-      setCurrentlyProcessingFile(null);
-      return;
+  // New state for retrying failed documents
+  const [failedItems, setFailedItems] = useState<{ file: File; index: number }[]>([]);
+  const [isRetrying, setIsRetrying] = useState(false);
+
+
+  const formatEta = (ms: number): string => {
+    if (ms < 1000 || !isFinite(ms)) return "a few seconds";
+
+    const totalSeconds = Math.round(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    if (minutes > 0) {
+      return `about ${minutes} minute${minutes > 1 ? 's' : ''}${seconds > 10 ? ` and ${seconds} seconds` : ''}`;
     }
+    return `about ${seconds} second${seconds > 1 ? 's' : ''}`;
+  };
 
-    const file = files[i];
-    setCurrentlyProcessingFile(file.name);
-    const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
-
-    try {
-      const filePart = await fileToGenerativePart(file);
-      const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
-      const parsedResult = JSON.parse(result);
-
-      if (orderedHeaders.includes('Document Name')) {
-        parsedResult['Document Name'] = file.name;
-      }
-
-      setExtractedData(prevData => {
-        const newData = prevData ? [...prevData, parsedResult] : [parsedResult];
-        if (orderedHeaders.includes('S.No')) {
-          return newData.map((row, index) => ({ ...row, 'S.No': index + 1 }));
-        }
-        return newData;
-      });
-
-      extractionIndexRef.current++;
-      setProgress(Math.round(((i + 1) / files.length) * 100));
-
-    } catch (err: any) {
-      console.error("Extraction failed for file:", file.name, err);
-      setError(`Error processing ${file.name}: ${err.message}.`);
-      setExtractionStatus('error'); // This pauses the process
-    }
-  }, [files, orderedHeaders, prompt]);
-
-  // Effect to manage the extraction lifecycle
-  useEffect(() => {
-    let timeoutId: number;
-    if (appState === 'extracting_data' && extractionStatus === 'running') {
-      // Using a timeout allows the UI to update before the next file is processed.
-      timeoutId = window.setTimeout(processNextFile, 0);
-    }
-    return () => clearTimeout(timeoutId);
-  }, [appState, extractionStatus, processNextFile]);
 
   const handleTestApiKey = async () => {
       setApiKeyStatus('testing');
@@ -120,13 +89,17 @@ const App: React.FC = () => {
             const file = filesToProcess[i];
             const filePart = await fileToGenerativePart(file);
             fileParts.push(filePart);
+            // Update progress for file processing (0% to 50%)
             setProgress(Math.round(((i + 1) / filesToProcess.length) * 50));
         }
 
+        // Indicate AI processing stage
         setProgress(75);
         const headers = await identifyHeadersFromFiles(fileParts);
         
-        setProgress(100);
+        setProgress(100); // Complete
+        
+        // Short delay for better UX, allowing user to see 100%
         await new Promise(resolve => setTimeout(resolve, 500));
 
         const enhancedHeaders = ['S.No', 'Document Name', ...headers];
@@ -138,17 +111,6 @@ const App: React.FC = () => {
     }
   }, [files, sameHeadersForAllFiles]);
 
-  const handleConfigureManually = () => {
-    if (files.length === 0) {
-        setError('Please upload at least one file first.');
-        return;
-    }
-    setError(null);
-    const defaultHeaders = ['S.No', 'Document Name'];
-    setSuggestedHeaders(defaultHeaders); 
-    setAppState('header_selection');
-  };
-
   const handleHeaderConfirm = (headers: string[]) => {
     setOrderedHeaders(headers);
     setAppState('prompting');
@@ -159,13 +121,25 @@ const App: React.FC = () => {
     setAppState('file_upload');
   };
 
-  const handleExtract = () => {
+  const handleExtract = useCallback(async () => {
     if (orderedHeaders.length === 0) {
         setError('Please configure headers before extracting.');
         return;
     }
+    setAppState('extracting_data');
+    setError(null);
+    setExtractedData([]);
+    setProgress(0);
+    setProcessedFileCount(0);
+    setEstimatedTimeRemaining(null);
+    smoothedEtaRef.current = null;
+    setExtractionStartTime(Date.now());
+    setFailedItems([]); // Clear previous failures
+    setIsRetrying(false);
 
     const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
+    
+    // Handle edge case where only metadata columns are selected
     if (headersForAI.length === 0) {
         const metaData = files.map((file, index) => {
             const row: Record<string, any> = {};
@@ -177,31 +151,188 @@ const App: React.FC = () => {
         setAppState('data_display');
         return;
     }
+    
+    const CONCURRENCY_LIMIT = 5;
+    const fileQueue = files.map((file, index) => ({ file, index }));
+    const results = new Array(files.length).fill(null);
+    const extractionErrors: string[] = [];
+    const currentRunFailedItems: { file: File; index: number }[] = [];
+    
+    const worker = async () => {
+        while (fileQueue.length > 0) {
+            const item = fileQueue.shift();
+            if (!item) continue;
+            const { file, index } = item;
+
+            let rowData;
+            try {
+                const filePart = await fileToGenerativePart(file);
+                const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
+                const parsedResult = JSON.parse(result);
+                if (orderedHeaders.includes('Document Name')) {
+                    parsedResult['Document Name'] = file.name;
+                }
+                rowData = parsedResult;
+            } catch (err: any) {
+                console.error("Extraction failed for file:", file.name, err);
+                extractionErrors.push(`Error processing ${file.name}: ${err.message}.`);
+                currentRunFailedItems.push(item);
+                const errorRow: Record<string, any> = {};
+                orderedHeaders.forEach(header => {
+                    if (header === 'Document Name') errorRow[header] = file.name;
+                    else if (header !== 'S.No') errorRow[header] = '--- EXTRACTION FAILED ---';
+                });
+                rowData = errorRow;
+            }
+
+            results[index] = rowData;
+
+            setProcessedFileCount(currentCount => {
+                const newCount = currentCount + 1;
+                if (extractionStartTime) {
+                    const elapsed = Date.now() - extractionStartTime;
+                    // Start calculating ETA after 1s and at least 2 files are done for a more stable initial estimate.
+                    if (elapsed > 1000 && newCount > 1) {
+                        const avgTimePerFile = elapsed / newCount;
+                        const remainingFiles = files.length - newCount;
+                        const rawEtaMs = remainingFiles * avgTimePerFile;
+
+                        // Apply exponential smoothing for a more stable, less jumpy estimate.
+                        const smoothingFactor = 0.4;
+                        if (smoothedEtaRef.current === null) {
+                            smoothedEtaRef.current = rawEtaMs;
+                        } else {
+                            smoothedEtaRef.current = smoothingFactor * rawEtaMs + (1 - smoothingFactor) * smoothedEtaRef.current;
+                        }
+                        
+                        setEstimatedTimeRemaining(formatEta(smoothedEtaRef.current));
+                    }
+                }
+                setProgress(Math.round((newCount / files.length) * 100));
+                return newCount;
+            });
+            
+            const liveTableData = results
+              .map((row, idx) => {
+                if (!row) return null;
+                const finalRow: Record<string, any> = { 'S.No': idx + 1 };
+                orderedHeaders.forEach(h => {
+                  if (h !== 'S.No') finalRow[h] = row[h];
+                });
+                return finalRow;
+              })
+              .filter((r): r is Record<string, any> => r !== null);
+            setExtractedData(liveTableData);
+        }
+    };
+    
+    const workers = Array(CONCURRENCY_LIMIT).fill(0).map(worker);
+    await Promise.all(workers);
+
+    setFailedItems(currentRunFailedItems);
+    if (extractionErrors.length > 0) {
+        setError(`Extraction completed with ${extractionErrors.length} error(s). Please review the results table.`);
+    }
+
+    const finalData = results.map((row, index) => {
+        const newRow: Record<string, any> = {};
+        orderedHeaders.forEach(header => {
+            if (header === 'S.No') {
+                newRow['S.No'] = index + 1;
+            } else {
+                newRow[header] = row[header] ?? 'N/A';
+            }
+        });
+        return newRow;
+    });
+
+    setEstimatedTimeRemaining(null);
+    setExtractedData(finalData);
+    setAppState('data_display');
+  }, [orderedHeaders, prompt, files, extractionStartTime]);
+
+  const handleRetryFailed = useCallback(async () => {
+    if (failedItems.length === 0) return;
 
     setAppState('extracting_data');
     setError(null);
-    setExtractedData([]);
     setProgress(0);
-    setCurrentlyProcessingFile(null);
-    extractionIndexRef.current = 0;
-    setExtractionStatus('running');
-  };
+    setProcessedFileCount(0);
+    setEstimatedTimeRemaining(null);
+    smoothedEtaRef.current = null;
+    setExtractionStartTime(Date.now());
+    setIsRetrying(true);
 
-  const handlePauseExtraction = () => setExtractionStatus('paused');
+    const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
+    const CONCURRENCY_LIMIT = 5;
+    const fileQueue = [...failedItems];
+    const results = [...(extractedData || [])];
+    const newFailedItems: { file: File; index: number }[] = [];
 
-  const handleResumeExtraction = () => {
-      setError(null);
-      if (extractionStatus === 'error') {
-          extractionIndexRef.current++;
-      }
-      setExtractionStatus('running');
-  };
-  
-  const handleStopExtraction = () => {
-      setExtractionStatus('stopped');
-      setAppState('data_display');
-      setCurrentlyProcessingFile(null);
-  };
+    const worker = async () => {
+        while (fileQueue.length > 0) {
+            const item = fileQueue.shift();
+            if (!item) continue;
+            const { file, index } = item;
+
+            try {
+                const filePart = await fileToGenerativePart(file);
+                const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
+                const parsedResult = JSON.parse(result);
+                
+                const successfulRow: Record<string, any> = {};
+                orderedHeaders.forEach(header => {
+                    if (header === 'S.No') successfulRow[header] = index + 1;
+                    else if (header === 'Document Name') successfulRow[header] = file.name;
+                    else successfulRow[header] = parsedResult[header] ?? 'N/A';
+                });
+                results[index] = successfulRow;
+
+            } catch (err: any) {
+                console.error("Retry failed for file:", file.name, err);
+                newFailedItems.push(item);
+                // Keep the existing error row in the results
+            }
+
+            setProcessedFileCount(currentCount => {
+                const newCount = currentCount + 1;
+                if (extractionStartTime) {
+                    const elapsed = Date.now() - extractionStartTime;
+                    if (elapsed > 1000 && newCount > 1) {
+                        const avgTimePerFile = elapsed / newCount;
+                        const remainingFiles = failedItems.length - newCount;
+                        const rawEtaMs = remainingFiles * avgTimePerFile;
+
+                        const smoothingFactor = 0.4;
+                        if (smoothedEtaRef.current === null) {
+                            smoothedEtaRef.current = rawEtaMs;
+                        } else {
+                            smoothedEtaRef.current = smoothingFactor * rawEtaMs + (1 - smoothingFactor) * smoothedEtaRef.current;
+                        }
+                        setEstimatedTimeRemaining(formatEta(smoothedEtaRef.current));
+                    }
+                }
+                setProgress(Math.round((newCount / failedItems.length) * 100));
+                return newCount;
+            });
+            
+            setExtractedData([...results]);
+        }
+    };
+
+    const workers = Array(CONCURRENCY_LIMIT).fill(0).map(worker);
+    await Promise.all(workers);
+
+    setFailedItems(newFailedItems);
+    if (newFailedItems.length > 0) {
+        setError(`Extraction completed with ${newFailedItems.length} error(s) remaining.`);
+    } else {
+        setError(null);
+    }
+
+    setEstimatedTimeRemaining(null);
+    setAppState('data_display');
+  }, [failedItems, orderedHeaders, prompt, extractedData, extractionStartTime]);
   
   const handleStartOver = () => {
     setAppState('file_upload');
@@ -213,22 +344,12 @@ const App: React.FC = () => {
     setSuggestedHeaders([]);
     setOrderedHeaders([]);
     setProgress(0);
-    setCurrentlyProcessingFile(null);
-    setExtractionStatus('running');
-  };
-
-  const handleRestartExtraction = () => {
-    if (files.length === 0 || orderedHeaders.length === 0) {
-        handleStartOver();
-        return;
-    }
-    setExtractedData([]);
-    setError(null);
-    setProgress(0);
-    setCurrentlyProcessingFile(null);
-    extractionIndexRef.current = 0;
-    setExtractionStatus('running');
-    setAppState('extracting_data');
+    setProcessedFileCount(0);
+    setExtractionStartTime(null);
+    setEstimatedTimeRemaining(null);
+    smoothedEtaRef.current = null;
+    setFailedItems([]);
+    setIsRetrying(false);
   };
 
   const renderContentPanel = () => {
@@ -276,24 +397,13 @@ const App: React.FC = () => {
                   </div>
               </div>
             ) : (
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <button
-                    onClick={handleIdentifyHeaders}
-                    disabled={files.length === 0}
-                    className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
-                  >
-                    <SparklesIcon className="w-6 h-6" />
-                    AI Identify Headers
-                  </button>
-                  <button
-                    onClick={handleConfigureManually}
-                    disabled={files.length === 0}
-                    className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
-                  >
-                    <PencilSquareIcon className="w-6 h-6" />
-                    Configure Manually
-                  </button>
-              </div>
+              <button
+                onClick={handleIdentifyHeaders}
+                disabled={files.length === 0}
+                className="mt-6 w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300"
+              >
+                Identify Headers
+              </button>
             )}
           </>
         );
@@ -322,78 +432,78 @@ const App: React.FC = () => {
           </>
         );
       case 'extracting_data':
-        const currentFileIndex = Math.min(extractionIndexRef.current + 1, files.length);
         return (
             <div className="text-center p-6">
                 <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Extraction in Progress</h2>
                 <div className="w-full max-w-lg mx-auto space-y-3">
                     <div className="flex justify-between mb-1">
-                        <span className="text-base font-medium text-blue-700 dark:text-blue-400">Overall Progress</span>
+                        <span className="text-base font-medium text-blue-700 dark:text-blue-400">Processing Documents</span>
                         <span className="text-sm font-medium text-blue-700 dark:text-blue-400">{progress}%</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
                         <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{width: `${progress}%`}}></div>
                     </div>
                     <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
-                        <span className="truncate pr-4" title={currentlyProcessingFile ?? 'Starting...'}>
-                            {currentlyProcessingFile ? `Processing: ${currentlyProcessingFile}` : 'Initializing...'}
+                        <span className="truncate pr-4">
+                            {isRetrying ? 'Retrying failed documents...' : 'Processing files concurrently...'}
                         </span>
                         <span className="flex-shrink-0">
-                             File {currentFileIndex} of {files.length}
+                             File {processedFileCount} of {isRetrying ? failedItems.length : files.length}
                         </span>
                     </div>
                 </div>
-                
-                <div className="mt-6 max-w-md mx-auto">
-                    {extractionStatus === 'error' && error && (
-                        <div className="mb-4 bg-red-100 dark:bg-red-900/30 p-3 rounded-lg border border-red-300 dark:border-red-600">
-                            <p className="font-semibold text-red-700 dark:text-red-300">An Error Occurred</p>
-                            <p className="text-sm text-red-600 dark:text-red-400 mt-1">{error}</p>
-                        </div>
-                    )}
-                    
-                    <div className="flex items-center justify-center gap-4">
-                        {extractionStatus === 'running' && (
-                            <button onClick={handlePauseExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-yellow-500 text-white font-semibold hover:bg-yellow-600 transition-colors">
-                                <PauseIcon className="w-5 h-5" /> Pause
-                            </button>
-                        )}
-                        {(extractionStatus === 'paused' || extractionStatus === 'error') && (
-                            <button onClick={handleResumeExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-green-500 text-white font-semibold hover:bg-green-600 transition-colors">
-                                <PlayIcon className="w-5 h-5" /> {extractionStatus === 'error' ? 'Resume (Skip File)' : 'Resume'}
-                            </button>
-                        )}
-                        <button onClick={handleStopExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 transition-colors">
-                            <StopIcon className="w-5 h-5" /> Stop
-                        </button>
-                    </div>
-                     <p className="text-gray-500 dark:text-gray-500 mt-6">
-                        View the results table below as it populates in real-time.
-                     </p>
-                </div>
+                 {estimatedTimeRemaining && processedFileCount < (isRetrying ? failedItems.length : files.length) && (
+                    <p className="text-gray-500 dark:text-gray-400 mt-4 max-w-md mx-auto text-sm">
+                        Estimated time remaining: <strong>{estimatedTimeRemaining}</strong>
+                    </p>
+                )}
+                <p className="text-gray-500 dark:text-gray-500 mt-6 max-w-md mx-auto">
+                    View the results table below as it populates in real-time.
+                </p>
             </div>
         );
-      case 'data_display':
-         const isComplete = extractionIndexRef.current >= files.length;
-         const finalTitle = isComplete ? "Extraction Complete!" : "Extraction Stopped";
-         const finalMessage = `View your data below. You can export it, restart the extraction with the same settings, or start a new session from scratch.`;
-         const finalBg = isComplete ? "bg-green-50 dark:bg-green-900/20" : "bg-yellow-50 dark:bg-yellow-900/20";
-         const finalTitleColor = isComplete ? "text-green-800 dark:text-green-200" : "text-yellow-800 dark:text-yellow-200";
- 
+      case 'data_display': {
+         const hasFailures = failedItems.length > 0;
+         const hasSuccess = (extractedData?.length ?? 0) > failedItems.length;
+         
+         let title = "Extraction Complete!";
+         let message = "View your data in the table below. You can now export it to CSV.";
+         let bgColor = "bg-green-50 dark:bg-green-900/20";
+         let textColor = "text-green-800 dark:text-green-200";
+
+         if (hasFailures && !hasSuccess) {
+             title = "Extraction Failed";
+             message = "All documents failed to process. Please check your files or prompt and try again.";
+             bgColor = "bg-red-50 dark:bg-red-900/20";
+             textColor = "text-red-800 dark:text-red-200";
+         } else if (hasFailures) {
+             title = "Extraction Complete with Errors";
+             message = "Some documents failed to process. You can retry the failed documents or export the partial results.";
+             bgColor = "bg-yellow-50 dark:bg-yellow-900/20";
+             textColor = "text-yellow-800 dark:text-yellow-200";
+         }
+         
          return (
-             <div className={`text-center p-6 ${finalBg} rounded-lg`}>
-               <h2 className={`text-2xl font-bold mb-4 ${finalTitleColor}`}>{finalTitle}</h2>
-               <p className="text-gray-600 dark:text-gray-300 mb-6">{finalMessage}</p>
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                   <button onClick={handleRestartExtraction} className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors">
-                     <ArrowPathIcon className="w-6 h-6" /> Restart
-                   </button>
-                   <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
-                     <UploadIcon className="w-6 h-6" /> Start New (Reset)
-                   </button>
-               </div>
+             <div className={`text-center p-6 ${bgColor} rounded-lg`}>
+               <h2 className={`text-2xl font-bold mb-4 ${textColor}`}>{title}</h2>
+               <p className="text-gray-600 dark:text-gray-300 mb-6">{message}</p>
+                <div className="flex flex-col sm:flex-row justify-center gap-4">
+                  {failedItems.length > 0 && (
+                      <button 
+                        onClick={handleRetryFailed} 
+                        className="flex items-center justify-center gap-3 bg-orange-500 text-white font-bold py-3 px-6 rounded-lg hover:bg-orange-600 transition-colors"
+                      >
+                        <RefreshCwIcon className="w-6 h-6" />
+                        Retry {failedItems.length} Failed Document{failedItems.length > 1 ? 's' : ''}
+                      </button>
+                  )}
+                  <button onClick={handleStartOver} className="flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
+                    <UploadIcon className="w-6 h-6" /> Start New Extraction
+                  </button>
+                </div>
              </div>
-          );
+         );
+        }
     }
   };
 
@@ -489,9 +599,9 @@ const App: React.FC = () => {
           </div>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 min-h-[500px] max-h-[80vh] flex flex-col">
             <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Results</h2>
-             {error && (appState === 'data_display' || extractionStatus === 'error') && (
-              <div className="mb-4 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg relative" role="alert">
-                <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Last Error: </strong>
+             {error && (appState === 'data_display' || appState === 'extracting_data') && (
+              <div className="mb-4 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-600 text-yellow-700 dark:text-yellow-300 px-4 py-3 rounded-lg relative" role="alert">
+                <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Notice: </strong>
                 <span className="block sm:inline">{error}</span>
               </div>
             )}

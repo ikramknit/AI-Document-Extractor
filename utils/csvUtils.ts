@@ -6,13 +6,13 @@ function escapeCsvCell(cellData: any): string {
     return stringValue;
 }
 
-export function exportToCsv(data: Record<string, any>[], filename: string = 'exported_data.csv', orderedHeaders?: string[]) {
+export function exportToCsv(data: Record<string, any>[], filename: string = 'exported_data.csv') {
     if (!data || data.length === 0) {
         console.warn("No data to export.");
         return;
     }
 
-    const headers = orderedHeaders && orderedHeaders.length > 0 ? orderedHeaders : Object.keys(data[0]);
+    const headers = Object.keys(data[0]);
     const csvRows = [
         headers.join(','), // Header row
         ...data.map(row => 
