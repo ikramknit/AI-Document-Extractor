@@ -1,16 +1,16 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import FileUpload from './components/FileUpload';
 import DataTable from './components/DataTable';
 import HeaderConfiguration from './components/HeaderConfiguration';
 import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from './services/geminiService';
 import { fileToGenerativePart } from './utils/fileUtils';
-import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon, PlayIcon, PauseIcon, StopIcon } from './components/Icons';
 import type { FileError } from './types';
 import type { Part } from '@google/genai';
 
 type AppState = 'file_upload' | 'identifying_headers' | 'header_selection' | 'prompting' | 'extracting_data' | 'data_display';
 type ApiKeyStatus = 'idle' | 'testing' | 'success' | 'error';
-
+type ExtractionStatus = 'running' | 'paused' | 'stopped' | 'error';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('file_upload');
@@ -26,6 +26,61 @@ const App: React.FC = () => {
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [currentlyProcessingFile, setCurrentlyProcessingFile] = useState<string | null>(null);
   const [sameHeadersForAllFiles, setSameHeadersForAllFiles] = useState(true);
+  const [extractionStatus, setExtractionStatus] = useState<ExtractionStatus>('running');
+  const extractionIndexRef = useRef(0);
+
+  const processNextFile = useCallback(async () => {
+    // This function is the core of the pausable extraction process.
+    // It processes one file at a time and then schedules the next one.
+    const i = extractionIndexRef.current;
+
+    if (i >= files.length) {
+      setAppState('data_display');
+      setExtractionStatus('stopped');
+      setCurrentlyProcessingFile(null);
+      return;
+    }
+
+    const file = files[i];
+    setCurrentlyProcessingFile(file.name);
+    const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
+
+    try {
+      const filePart = await fileToGenerativePart(file);
+      const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
+      const parsedResult = JSON.parse(result);
+
+      if (orderedHeaders.includes('Document Name')) {
+        parsedResult['Document Name'] = file.name;
+      }
+
+      setExtractedData(prevData => {
+        const newData = prevData ? [...prevData, parsedResult] : [parsedResult];
+        if (orderedHeaders.includes('S.No')) {
+          return newData.map((row, index) => ({ ...row, 'S.No': index + 1 }));
+        }
+        return newData;
+      });
+
+      extractionIndexRef.current++;
+      setProgress(Math.round(((i + 1) / files.length) * 100));
+
+    } catch (err: any) {
+      console.error("Extraction failed for file:", file.name, err);
+      setError(`Error processing ${file.name}: ${err.message}.`);
+      setExtractionStatus('error'); // This pauses the process
+    }
+  }, [files, orderedHeaders, prompt]);
+
+  // Effect to manage the extraction lifecycle
+  useEffect(() => {
+    let timeoutId: number;
+    if (appState === 'extracting_data' && extractionStatus === 'running') {
+      // Using a timeout allows the UI to update before the next file is processed.
+      timeoutId = window.setTimeout(processNextFile, 0);
+    }
+    return () => clearTimeout(timeoutId);
+  }, [appState, extractionStatus, processNextFile]);
 
   const handleTestApiKey = async () => {
       setApiKeyStatus('testing');
@@ -65,17 +120,13 @@ const App: React.FC = () => {
             const file = filesToProcess[i];
             const filePart = await fileToGenerativePart(file);
             fileParts.push(filePart);
-            // Update progress for file processing (0% to 50%)
             setProgress(Math.round(((i + 1) / filesToProcess.length) * 50));
         }
 
-        // Indicate AI processing stage
         setProgress(75);
         const headers = await identifyHeadersFromFiles(fileParts);
         
-        setProgress(100); // Complete
-        
-        // Short delay for better UX, allowing user to see 100%
+        setProgress(100);
         await new Promise(resolve => setTimeout(resolve, 500));
 
         const enhancedHeaders = ['S.No', 'Document Name', ...headers];
@@ -93,7 +144,6 @@ const App: React.FC = () => {
         return;
     }
     setError(null);
-    // We add the default headers here so the user can still choose them
     const defaultHeaders = ['S.No', 'Document Name'];
     setSuggestedHeaders(defaultHeaders); 
     setAppState('header_selection');
@@ -109,21 +159,13 @@ const App: React.FC = () => {
     setAppState('file_upload');
   };
 
-  const handleExtract = useCallback(async () => {
+  const handleExtract = () => {
     if (orderedHeaders.length === 0) {
         setError('Please configure headers before extracting.');
         return;
     }
-    setAppState('extracting_data');
-    setError(null);
-    setExtractedData([]);
-    setProgress(0);
-    setCurrentlyProcessingFile(null);
 
-    const allResults: Record<string, any>[] = [];
     const headersForAI = orderedHeaders.filter(h => h !== 'S.No' && h !== 'Document Name');
-
-    // Handle edge case where only metadata columns are selected
     if (headersForAI.length === 0) {
         const metaData = files.map((file, index) => {
             const row: Record<string, any> = {};
@@ -136,64 +178,30 @@ const App: React.FC = () => {
         return;
     }
 
-    for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setCurrentlyProcessingFile(file.name);
-        try {
-            const filePart = await fileToGenerativePart(file);
-            const result = await extractInfoFromSingleFile(headersForAI, prompt, filePart);
-            const parsedResult = JSON.parse(result);
-            
-            if (orderedHeaders.includes('Document Name')) {
-                parsedResult['Document Name'] = file.name;
-            }
-            allResults.push(parsedResult);
-            
-            // Add S.No at this stage to keep it consistent during live update
-            const liveData = allResults.map((row, index) => ({ 'S.No': index + 1, ...row }));
-            setExtractedData(liveData);
-
-        } catch (err: any) {
-            console.error("Extraction failed for file:", file.name, err);
-            setError(`Error processing ${file.name}: ${err.message}. Extraction stopped.`);
-            
-            // Save the results that were successfully processed before the error.
-            const finalData = allResults.map((row, index) => {
-                const newRow: Record<string, any> = {};
-                orderedHeaders.forEach(header => {
-                    if (header === 'S.No') {
-                        newRow['S.No'] = index + 1;
-                    } else {
-                        newRow[header] = row[header];
-                    }
-                });
-                return newRow;
-            });
-            setExtractedData(finalData);
-            
-            setCurrentlyProcessingFile(null);
-            setAppState('data_display'); // Move to display state to allow saving partial results
-            return; // Exit the loop
-        }
-        setProgress(Math.round(((i + 1) / files.length) * 100));
-    }
-
-    const finalData = allResults.map((row, index) => {
-        const newRow: Record<string, any> = {};
-        orderedHeaders.forEach(header => {
-            if (header === 'S.No') {
-                newRow['S.No'] = index + 1;
-            } else {
-                newRow[header] = row[header];
-            }
-        });
-        return newRow;
-    });
-
+    setAppState('extracting_data');
+    setError(null);
+    setExtractedData([]);
+    setProgress(0);
     setCurrentlyProcessingFile(null);
-    setExtractedData(finalData);
-    setAppState('data_display');
-  }, [orderedHeaders, prompt, files]);
+    extractionIndexRef.current = 0;
+    setExtractionStatus('running');
+  };
+
+  const handlePauseExtraction = () => setExtractionStatus('paused');
+
+  const handleResumeExtraction = () => {
+      setError(null);
+      if (extractionStatus === 'error') {
+          extractionIndexRef.current++;
+      }
+      setExtractionStatus('running');
+  };
+  
+  const handleStopExtraction = () => {
+      setExtractionStatus('stopped');
+      setAppState('data_display');
+      setCurrentlyProcessingFile(null);
+  };
   
   const handleStartOver = () => {
     setAppState('file_upload');
@@ -206,6 +214,7 @@ const App: React.FC = () => {
     setOrderedHeaders([]);
     setProgress(0);
     setCurrentlyProcessingFile(null);
+    setExtractionStatus('running');
   };
 
   const renderContentPanel = () => {
@@ -299,12 +308,13 @@ const App: React.FC = () => {
           </>
         );
       case 'extracting_data':
+        const currentFileIndex = Math.min(extractionIndexRef.current + 1, files.length);
         return (
             <div className="text-center p-6">
                 <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Extraction in Progress</h2>
                 <div className="w-full max-w-lg mx-auto space-y-3">
                     <div className="flex justify-between mb-1">
-                        <span className="text-base font-medium text-blue-700 dark:text-blue-400">Processing Documents</span>
+                        <span className="text-base font-medium text-blue-700 dark:text-blue-400">Overall Progress</span>
                         <span className="text-sm font-medium text-blue-700 dark:text-blue-400">{progress}%</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
@@ -315,21 +325,46 @@ const App: React.FC = () => {
                             {currentlyProcessingFile ? `Processing: ${currentlyProcessingFile}` : 'Initializing...'}
                         </span>
                         <span className="flex-shrink-0">
-                             File {Math.min(Math.ceil(progress / 100 * files.length), files.length)} of {files.length}
+                             File {currentFileIndex} of {files.length}
                         </span>
                     </div>
                 </div>
-                <p className="text-gray-500 dark:text-gray-500 mt-6 max-w-md mx-auto">
-                    View the results table below as it populates in real-time.
-                </p>
+                
+                <div className="mt-6 max-w-md mx-auto">
+                    {extractionStatus === 'error' && error && (
+                        <div className="mb-4 bg-red-100 dark:bg-red-900/30 p-3 rounded-lg border border-red-300 dark:border-red-600">
+                            <p className="font-semibold text-red-700 dark:text-red-300">An Error Occurred</p>
+                            <p className="text-sm text-red-600 dark:text-red-400 mt-1">{error}</p>
+                        </div>
+                    )}
+                    
+                    <div className="flex items-center justify-center gap-4">
+                        {extractionStatus === 'running' && (
+                            <button onClick={handlePauseExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-yellow-500 text-white font-semibold hover:bg-yellow-600 transition-colors">
+                                <PauseIcon className="w-5 h-5" /> Pause
+                            </button>
+                        )}
+                        {(extractionStatus === 'paused' || extractionStatus === 'error') && (
+                            <button onClick={handleResumeExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-green-500 text-white font-semibold hover:bg-green-600 transition-colors">
+                                <PlayIcon className="w-5 h-5" /> {extractionStatus === 'error' ? 'Resume (Skip File)' : 'Resume'}
+                            </button>
+                        )}
+                        <button onClick={handleStopExtraction} className="flex items-center gap-2 py-2 px-4 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 transition-colors">
+                            <StopIcon className="w-5 h-5" /> Stop
+                        </button>
+                    </div>
+                     <p className="text-gray-500 dark:text-gray-500 mt-6">
+                        View the results table below as it populates in real-time.
+                     </p>
+                </div>
             </div>
         );
       case 'data_display':
-         if (error) {
+         if (error && extractionStatus !== 'stopped') {
              return (
                  <div className="text-center p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
                    <h2 className="text-2xl font-bold mb-4 text-yellow-800 dark:text-yellow-200">Extraction Halted</h2>
-                   <p className="text-gray-600 dark:text-gray-300 mb-6">An error occurred during extraction. You can export the successfully processed data below or start over.</p>
+                   <p className="text-gray-600 dark:text-gray-300 mb-6">An error occurred, but partial data is available. You can export it or start over.</p>
                    <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
                      <UploadIcon className="w-6 h-6" /> Start New Extraction
                    </button>
@@ -440,9 +475,9 @@ const App: React.FC = () => {
           </div>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 min-h-[500px] max-h-[80vh] flex flex-col">
             <h2 className="text-2xl font-bold mb-4 text-gray-800 dark:text-gray-200">Results</h2>
-             {error && ['extracting_data', 'data_display'].includes(appState) && (
+             {error && (appState === 'data_display' || extractionStatus === 'error') && (
               <div className="mb-4 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg relative" role="alert">
-                <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Error: </strong>
+                <strong className="font-bold flex items-center"><AlertTriangleIcon className="w-5 h-5 mr-2" />Last Error: </strong>
                 <span className="block sm:inline">{error}</span>
               </div>
             )}
