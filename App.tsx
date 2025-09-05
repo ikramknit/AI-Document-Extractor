@@ -4,7 +4,7 @@ import DataTable from './components/DataTable';
 import HeaderConfiguration from './components/HeaderConfiguration';
 import { identifyHeadersFromFiles, extractInfoFromSingleFile, testApiKey } from './services/geminiService';
 import { fileToGenerativePart } from './utils/fileUtils';
-import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon, PlayIcon, PauseIcon, StopIcon } from './components/Icons';
+import { SparklesIcon, AlertTriangleIcon, UploadIcon, KeyIcon, CheckCircleIcon, XCircleIcon, PencilSquareIcon, PlayIcon, PauseIcon, StopIcon, ArrowPathIcon } from './components/Icons';
 import type { FileError } from './types';
 import type { Part } from '@google/genai';
 
@@ -217,6 +217,20 @@ const App: React.FC = () => {
     setExtractionStatus('running');
   };
 
+  const handleRestartExtraction = () => {
+    if (files.length === 0 || orderedHeaders.length === 0) {
+        handleStartOver();
+        return;
+    }
+    setExtractedData([]);
+    setError(null);
+    setProgress(0);
+    setCurrentlyProcessingFile(null);
+    extractionIndexRef.current = 0;
+    setExtractionStatus('running');
+    setAppState('extracting_data');
+  };
+
   const renderContentPanel = () => {
     const isIdentifying = appState === 'identifying_headers';
 
@@ -360,26 +374,26 @@ const App: React.FC = () => {
             </div>
         );
       case 'data_display':
-         if (error && extractionStatus !== 'stopped') {
-             return (
-                 <div className="text-center p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-                   <h2 className="text-2xl font-bold mb-4 text-yellow-800 dark:text-yellow-200">Extraction Halted</h2>
-                   <p className="text-gray-600 dark:text-gray-300 mb-6">An error occurred, but partial data is available. You can export it or start over.</p>
-                   <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
-                     <UploadIcon className="w-6 h-6" /> Start New Extraction
-                   </button>
-                 </div>
-             );
-         }
+         const isComplete = extractionIndexRef.current >= files.length;
+         const finalTitle = isComplete ? "Extraction Complete!" : "Extraction Stopped";
+         const finalMessage = `View your data below. You can export it, restart the extraction with the same settings, or start a new session from scratch.`;
+         const finalBg = isComplete ? "bg-green-50 dark:bg-green-900/20" : "bg-yellow-50 dark:bg-yellow-900/20";
+         const finalTitleColor = isComplete ? "text-green-800 dark:text-green-200" : "text-yellow-800 dark:text-yellow-200";
+ 
          return (
-            <div className="text-center p-6 bg-green-50 dark:bg-green-900/20 rounded-lg">
-              <h2 className="text-2xl font-bold mb-4 text-green-800 dark:text-green-200">Extraction Complete!</h2>
-              <p className="text-gray-600 dark:text-gray-300 mb-6">View your data in the table below. You can now export it to CSV.</p>
-              <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
-                <UploadIcon className="w-6 h-6" /> Start New Extraction
-              </button>
-            </div>
-         );
+             <div className={`text-center p-6 ${finalBg} rounded-lg`}>
+               <h2 className={`text-2xl font-bold mb-4 ${finalTitleColor}`}>{finalTitle}</h2>
+               <p className="text-gray-600 dark:text-gray-300 mb-6">{finalMessage}</p>
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   <button onClick={handleRestartExtraction} className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors">
+                     <ArrowPathIcon className="w-6 h-6" /> Restart
+                   </button>
+                   <button onClick={handleStartOver} className="w-full flex items-center justify-center gap-3 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
+                     <UploadIcon className="w-6 h-6" /> Start New (Reset)
+                   </button>
+               </div>
+             </div>
+          );
     }
   };
 
